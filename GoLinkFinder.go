@@ -1,11 +1,7 @@
-/*
- https://0xsha.io
- by @0xsha 1/2020
-*/
-
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
@@ -14,26 +10,20 @@ import (
 	"regexp"
 	"strings"
 
-	// repos makes things easier
 	"github.com/PuerkitoBio/goquery"
 	"github.com/akamensky/argparse"
 	"github.com/tomnomnom/gahttp"
 )
 
-/// Global variables ///
-
-const version = "1.0.0-alpha"
-
-// you can change it
+const version = "1.0.5"
 const concurrency = 10
 
-// regex foo from https://github.com/GerbenJavado/LinkFinder
-const regexStr = `(?:"|')(((?:[a-zA-Z]{1,10}://|//)[^"'/]{1,}\.[a-zA-Z]{2,}[^"']{0,})|((?:/|\.\./|\./)[^"'><,;| *()(%%$^/\\\[\]][^"'><,;|()]{1,})|([a-zA-Z0-9_\-/]{1,}/[a-zA-Z0-9_\-/]{1,}\.(?:[a-zA-Z]{1,4}|action)(?:[\?|#][^"|']{0,}|))|([a-zA-Z0-9_\-/]{1,}/[a-zA-Z0-9_\-/]{3,}(?:[\?|#][^"|']{0,}|))|([a-zA-Z0-9_\-]{1,}\.(?:php|asp|aspx|jsp|json|action|html|js|txt|xml)(?:[\?|#][^"|']{0,}|)))(?:"|')`
+// Regex pattern to capture URLs from various sources
+const regexStr = `(?:"|')(https?://[^\s"']+|//[^\s"']+|/[^\s"']+|[a-zA-Z0-9_\-/]+/[a-zA-Z0-9_\-/]+\.[a-zA-Z]{1,4})(?:"|')`
 
-// will add everything to this list
-// you can change it to SQLite
 var founds []string
 
+// Filters URLs to remove duplicates
 func unique(strSlice []string) []string {
 	keys := make(map[string]bool)
 	list := []string{}
@@ -46,8 +36,8 @@ func unique(strSlice []string) []string {
 	return list
 }
 
+// Downloads JavaScript files from URLs and parses their content
 func downloadJSFile(urls []string, concurrency int) {
-
 	pipeLine := gahttp.NewPipeline()
 	pipeLine.SetConcurrency(concurrency)
 	for _, u := range urls {
@@ -55,9 +45,9 @@ func downloadJSFile(urls []string, concurrency int) {
 	}
 	pipeLine.Done()
 	pipeLine.Wait()
-
 }
 
+// Parses content from the JavaScript files and matches URLs
 func parseFile(req *http.Request, resp *http.Response, err error) {
 	if err != nil {
 		return
@@ -66,168 +56,184 @@ func parseFile(req *http.Request, resp *http.Response, err error) {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// if you like it beautiful
-	//options := jsbeautifier.DefaultOptions()
-	//code := jsbeautifier.BeautifyFile(string(fileBytes), options)
-
 	matchAndAdd(string(body))
-
 }
 
+// Extracts JavaScript URLs from HTML
 func extractUrlFromJS(urls []string, baseUrl string) []string {
-
 	urls = unique(urls)
-
 	var cleaned []string
-
-	for i := 1; i < len(urls); i++ {
-
-		urls[i] = strings.ReplaceAll(urls[i], "'", "")
-		urls[i] = strings.ReplaceAll(urls[i], "\"", "")
-
-		if len(urls[i]) < 5 {
+	for _, u := range urls {
+		u = strings.ReplaceAll(u, "'", "")
+		u = strings.ReplaceAll(u, "\"", "")
+		if len(u) < 5 {
 			continue
 		}
-
-		if !strings.Contains(urls[i], ".js") {
-			continue
-		}
-
-		if urls[i][:4] == "http" || urls[i][:5] == "https" {
-			cleaned = append(cleaned, urls[i])
-			continue
-		}
-
-		if urls[i][:2] == "//" {
-
-			cleaned = append(cleaned, "https:"+urls[i])
-			continue
-		}
-
-		if urls[i][:1] == "/" {
-			{
-				cleaned = append(cleaned, baseUrl+urls[i])
-
-			}
-
+		switch {
+		case strings.HasPrefix(u, "http"), strings.HasPrefix(u, "https"):
+			cleaned = append(cleaned, u)
+		case strings.HasPrefix(u, "//"):
+			cleaned = append(cleaned, "https:"+u)
+		case strings.HasPrefix(u, "/"):
+			cleaned = append(cleaned, baseUrl+u)
 		}
 	}
 	return cleaned
 }
 
+// Matches URLs using regex and adds them to the list
 func matchAndAdd(content string) []string {
-
 	regExp, err := regexp.Compile(regexStr)
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	links := regExp.FindAllString(content, -1)
-	linksLength := len(links)
-	if linksLength > 1 {
-		for i := 0; i < linksLength; i++ {
-			founds = append(founds, links[i])
-		}
-
-	}
+	founds = append(founds, links...)
 	return founds
-
 }
 
+// Appends the base URL to relative paths
 func appendBaseUrl(urls []string, baseUrl string) []string {
 	urls = unique(urls)
 	var n []string
-	for i := 0; i < len(urls); i++ {
-		n = append(n, baseUrl+strings.TrimSpace(urls[i]))
+	for _, u := range urls {
+		n = append(n, baseUrl+strings.TrimSpace(u))
 	}
-
 	return n
 }
 
-func extractJSLinksFromHTML(baseUrl string) []string {
-
-	var resp, err = http.Get(baseUrl)
+// Extracts URLs from HTML tags and attributes
+func extractURLsFromHTML(baseUrl string) []string {
+	resp, err := http.Get(baseUrl)
+	if err != nil {
+		log.Fatal(err)
+	}
 	defer resp.Body.Close()
 
-	if err != nil {
-		log.Fatal(err)
-
-	}
-
-	goos, err := goquery.NewDocumentFromReader(resp.Body)
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	var htmlJS = matchAndAdd(goos.Find("script").Text())
-	var urls = extractUrlFromJS(htmlJS, baseUrl)
-
-	goos.Find("script").Each(func(i int, s *goquery.Selection) {
-		src, _ := s.Attr("src")
-		urls = append(urls, src)
+	// Capture URLs from various HTML tags
+	var urls []string
+	doc.Find("script").Each(func(i int, s *goquery.Selection) {
+		if src, exists := s.Attr("src"); exists {
+			urls = append(urls, src)
+		}
 	})
+	doc.Find("a, link, img, iframe").Each(func(i int, s *goquery.Selection) {
+		if href, exists := s.Attr("href"); exists {
+			urls = append(urls, href)
+		}
+		if src, exists := s.Attr("src"); exists {
+			urls = append(urls, src)
+		}
+	})
+	// Capture URLs from inline JavaScript
+	htmlJS := matchAndAdd(doc.Find("script").Text())
+	urls = append(urls, extractUrlFromJS(htmlJS, baseUrl)...)
 
-	urls = appendBaseUrl(urls, baseUrl)
-	return urls
+	return appendBaseUrl(unique(urls), baseUrl)
 }
 
-// prepares the final output by replacing \" and ' with ""
+// Prepares the final output by cleaning up the URLs
 func prepareResult(result []string) []string {
-	for i := 0; i < len(result); i++ {
+	for i := range result {
 		result[i] = strings.ReplaceAll(result[i], "\"", "")
 		result[i] = strings.ReplaceAll(result[i], "'", "")
 	}
 	return result
 }
 
-func main() {
+// Filters URLs based on the specified scope
+func filterByScope(urls []string, scope string) []string {
+	var scopedURLs []string
+	for _, url := range urls {
+		if strings.Contains(url, scope) {
+			scopedURLs = append(scopedURLs, url)
+		}
+	}
+	return scopedURLs
+}
 
+// Processes each URL by extracting and downloading JavaScript files
+func processURL(baseUrl, scope string) {
+	if !strings.HasPrefix(baseUrl, "http://") && !strings.HasPrefix(baseUrl, "https://") {
+		baseUrl = "https://" + baseUrl
+	}
+	htmlUrls := extractURLsFromHTML(baseUrl)
+	downloadJSFile(htmlUrls, concurrency)
+	if scope != "" {
+		founds = filterByScope(founds, scope)
+	}
+}
+
+// Reads URLs from a specified file
+func readURLsFromFile(filename string) []string {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("Could not open file: %v\n", err)
+	}
+	defer file.Close()
+
+	var urls []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		url := strings.TrimSpace(scanner.Text())
+		if url != "" {
+			urls = append(urls, url)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		log.Fatalf("Error reading file: %v\n", err)
+	}
+	return urls
+}
+
+func main() {
 	parser := argparse.NewParser("goLinkFinder", "GoLinkFinder")
-	domain := parser.String("d", "domain", &argparse.Options{Required: true, Help: "Input a URL."})
-	output := parser.String("o", "out", &argparse.Options{Required: false, Help: "File name :  (e.g : output.txt)"})
+	domain := parser.String("d", "domain", &argparse.Options{Help: "Input a URL."})
+	output := parser.String("o", "out", &argparse.Options{Help: "File name :  (e.g : output.txt)"})
+	fileInput := parser.String("f", "file", &argparse.Options{Help: "Input file with URLs"})
+	scope := parser.String("s", "scope", &argparse.Options{Help: "Scope for filtering URLs (e.g., example)"})
 
 	err := parser.Parse(os.Args)
 	if err != nil {
 		fmt.Print(parser.Usage(err))
 		return
-
 	}
 
-	var baseUrl = *domain
-
-	if !strings.HasPrefix(baseUrl, "http://") &&
-		!strings.HasPrefix(baseUrl, "https://") {
-		baseUrl = "https://" + baseUrl
-
+	var urls []string
+	if *fileInput != "" {
+		urls = readURLsFromFile(*fileInput)
+	} else if *domain != "" {
+		urls = []string{*domain}
+	} else {
+		fmt.Println("Please provide a domain (-d) or a file (-f) with URLs.")
+		return
 	}
 
-	var htmlUrls = extractJSLinksFromHTML(baseUrl)
-	downloadJSFile(htmlUrls, concurrency)
+	for _, url := range urls {
+		processURL(url, *scope)
+	}
+
 	founds = unique(founds)
 	founds = prepareResult(founds)
-
 	for _, found := range founds {
 		fmt.Println(found)
 	}
 
 	if *output != "" {
-
-		f, err := os.OpenFile("./"+*output,
-			os.O_CREATE|os.O_WRONLY, 0644)
-
+		f, err := os.OpenFile("./"+*output, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Println(err)
 		}
-
 		defer f.Close()
-
 		for _, found := range founds {
 			if _, err := f.WriteString(found + "\n"); err != nil {
 				log.Fatal(err)
 			}
 		}
-
 	}
-
 }

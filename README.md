@@ -84,7 +84,7 @@ you can easily pipe out its output with your other tools.
 
 # Requirements
 
-Go >= 1.13
+Go > 1.22
 
 # Installation
 
